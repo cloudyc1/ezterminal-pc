@@ -25,9 +25,10 @@ cd ezterminal-pc
 ```text
 Phone Relay: ws://你的局域网IP:8787/client
 Bind code:   123456
+Code expires: 2026-05-23T12:00:00.000Z
 ```
 
-在 EzTerminal 小程序里填入 `Phone Relay` 地址并连接，然后输入 `Bind code` 完成绑定。
+在 EzTerminal 小程序里填入 `Phone Relay` 地址并连接，然后输入 `Bind code` 完成绑定。绑定码默认 10 分钟过期；过期后运行 `./link restart` 获取新码。
 
 如果只想执行安装启动，也可以运行：
 
@@ -67,6 +68,7 @@ PC Client 会把运行时配置写到本机用户目录：
   config.env
   device.json
   bind-code
+  bind-code-expires-at
   logs/
 ```
 
@@ -76,6 +78,7 @@ PC Client 会把运行时配置写到本机用户目录：
 
 ```bash
 RELAY_PORT=8787
+BIND_CODE_TTL_SECONDS=600
 RELAY_SESSION=ezterminal_relay
 AGENT_SESSION=ezterminal_agent
 ```

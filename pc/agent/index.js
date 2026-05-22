@@ -8,6 +8,8 @@ const { loadDevice, createBindCode, getOsLabel } = require("./device");
 
 const relayUrl = process.env.RELAY_URL || "ws://127.0.0.1:8787/agent";
 const bindCode = process.env.BIND_CODE || createBindCode();
+const bindCodeTtlSeconds = normalizeBindCodeTtlSeconds(process.env.BIND_CODE_TTL_SECONDS);
+const bindCodeExpiresAt = process.env.BIND_CODE_EXPIRES_AT || createBindCodeExpiresAt(bindCodeTtlSeconds);
 const device = loadDevice();
 const sessions = new Map();
 const tmux = new TmuxManager();
@@ -27,6 +29,7 @@ function connect() {
   socket.addEventListener("open", () => {
     console.log(`Agent connected: ${relayUrl}`);
     console.log(`Bind code: ${bindCode}`);
+    console.log(`Bind code expires at: ${bindCodeExpiresAt}`);
     send(
       createProtocolEvent("agent.register", {
         device_id: device.device_id,
@@ -34,6 +37,7 @@ function connect() {
         os: getOsLabel(),
         agent_version: "0.1.0",
         bind_code: bindCode,
+        bind_code_expires_at: bindCodeExpiresAt,
       })
     );
   });
@@ -348,6 +352,19 @@ function safeJsonParse(text) {
   } catch (error) {
     return null;
   }
+}
+
+function normalizeBindCodeTtlSeconds(value) {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+
+  return 600;
+}
+
+function createBindCodeExpiresAt(ttlSeconds) {
+  return new Date(Date.now() + ttlSeconds * 1000).toISOString();
 }
 
 process.on("SIGINT", () => {

@@ -7,6 +7,8 @@ EZTERMINAL_HOME="${EZTERMINAL_HOME:-$HOME/.ezterminal}"
 CONFIG_FILE="$EZTERMINAL_HOME/config.env"
 LOG_DIR="$EZTERMINAL_HOME/logs"
 BIND_CODE_FILE="$EZTERMINAL_HOME/bind-code"
+BIND_CODE_EXPIRES_FILE="$EZTERMINAL_HOME/bind-code-expires-at"
+BIND_CODE_TTL_SECONDS="${BIND_CODE_TTL_SECONDS:-600}"
 RELAY_PORT="${RELAY_PORT:-8787}"
 RELAY_SESSION="${RELAY_SESSION:-ezterminal_relay}"
 AGENT_SESSION="${AGENT_SESSION:-ezterminal_agent}"
@@ -26,6 +28,10 @@ load_config() {
   fi
 
   RELAY_PORT="${RELAY_PORT:-8787}"
+  BIND_CODE_TTL_SECONDS="${BIND_CODE_TTL_SECONDS:-600}"
+  if ! [[ "$BIND_CODE_TTL_SECONDS" =~ ^[0-9]+$ ]] || [[ "$BIND_CODE_TTL_SECONDS" -le 0 ]]; then
+    BIND_CODE_TTL_SECONDS=600
+  fi
   RELAY_SESSION="${RELAY_SESSION:-ezterminal_relay}"
   AGENT_SESSION="${AGENT_SESSION:-ezterminal_agent}"
 }
@@ -38,6 +44,7 @@ ensure_config() {
 # EzTerminal PC client config.
 # This file is local to your computer and should not be committed.
 RELAY_PORT=8787
+BIND_CODE_TTL_SECONDS=600
 RELAY_SESSION=ezterminal_relay
 AGENT_SESSION=ezterminal_agent
 CONFIG
@@ -71,6 +78,13 @@ detect_lan_ip() {
 
 random_bind_code() {
   awk 'BEGIN { srand(); printf "%06d", int(rand() * 1000000) }'
+}
+
+create_bind_code_expires_at() {
+  local expires_at_epoch
+
+  expires_at_epoch="$(($(date +%s) + BIND_CODE_TTL_SECONDS))"
+  node -e 'console.log(new Date(Number(process.argv[1]) * 1000).toISOString())' "$expires_at_epoch"
 }
 
 shell_quote() {
@@ -187,11 +201,14 @@ start_agent() {
   fi
 
   local bind_code
+  local bind_code_expires_at
   bind_code="${BIND_CODE:-$(random_bind_code)}"
+  bind_code_expires_at="$(create_bind_code_expires_at)"
   printf "%s" "$bind_code" >"$BIND_CODE_FILE"
+  printf "%s" "$bind_code_expires_at" >"$BIND_CODE_EXPIRES_FILE"
   : >"$AGENT_LOG"
   tmux new-session -d -s "$AGENT_SESSION" -c "$ROOT_DIR" \
-    "EZTERMINAL_HOME=$(shell_quote "$EZTERMINAL_HOME") RELAY_URL=ws://127.0.0.1:$RELAY_PORT/agent BIND_CODE=$bind_code node pc/agent/index.js 2>&1 | tee '$AGENT_LOG'"
+    "EZTERMINAL_HOME=$(shell_quote "$EZTERMINAL_HOME") RELAY_URL=ws://127.0.0.1:$RELAY_PORT/agent BIND_CODE=$bind_code BIND_CODE_TTL_SECONDS=$BIND_CODE_TTL_SECONDS BIND_CODE_EXPIRES_AT=$(shell_quote "$bind_code_expires_at") node pc/agent/index.js 2>&1 | tee '$AGENT_LOG'"
 }
 
 read_bind_code() {
@@ -224,12 +241,44 @@ read_bind_code() {
   echo "unknown"
 }
 
+read_bind_code_expires_at() {
+  local expires_at
+
+  if [[ -f "$BIND_CODE_EXPIRES_FILE" ]]; then
+    expires_at="$(cat "$BIND_CODE_EXPIRES_FILE")"
+    if [[ -n "$expires_at" ]]; then
+      echo "$expires_at"
+      return
+    fi
+  fi
+
+  if session_exists "$AGENT_SESSION"; then
+    expires_at="$(tmux capture-pane -t "$AGENT_SESSION" -p 2>/dev/null | awk -F'Bind code expires at: ' '/Bind code expires at:/ { value=$2 } END { print value }')"
+    if [[ -n "$expires_at" ]]; then
+      echo "$expires_at"
+      return
+    fi
+  fi
+
+  if [[ -f "$AGENT_LOG" ]]; then
+    expires_at="$(awk -F'Bind code expires at: ' '/Bind code expires at:/ { value=$2 } END { print value }' "$AGENT_LOG")"
+    if [[ -n "$expires_at" ]]; then
+      echo "$expires_at"
+      return
+    fi
+  fi
+
+  echo "unknown"
+}
+
 print_summary() {
   local lan_ip
   local bind_code
+  local bind_code_expires_at
 
   lan_ip="$(detect_lan_ip)"
   bind_code="$(read_bind_code)"
+  bind_code_expires_at="$(read_bind_code_expires_at)"
 
   echo ""
   echo "EzTerminal PC service is running"
@@ -246,8 +295,10 @@ print_summary() {
     echo "Phone Relay:     unable to detect LAN IP"
   fi
   echo "Bind code:       $bind_code"
+  echo "Code expires:    $bind_code_expires_at"
   echo ""
   echo "Next: open the Mini Program, connect to the Phone Relay, then enter the bind code."
+  echo "If the code expires, run ./link restart to get a new one."
 }
 
 run_relay_foreground() {
@@ -263,7 +314,7 @@ run_agent_foreground() {
   load_config
   ensure_node
   ensure_dependencies
-  RELAY_URL="${RELAY_URL:-ws://127.0.0.1:$RELAY_PORT/agent}" BIND_CODE="${BIND_CODE:-$(random_bind_code)}" EZTERMINAL_HOME="$EZTERMINAL_HOME" node "$ROOT_DIR/pc/agent/index.js"
+  RELAY_URL="${RELAY_URL:-ws://127.0.0.1:$RELAY_PORT/agent}" BIND_CODE="${BIND_CODE:-$(random_bind_code)}" BIND_CODE_TTL_SECONDS="$BIND_CODE_TTL_SECONDS" BIND_CODE_EXPIRES_AT="$(create_bind_code_expires_at)" EZTERMINAL_HOME="$EZTERMINAL_HOME" node "$ROOT_DIR/pc/agent/index.js"
 }
 
 run_start() {
@@ -301,6 +352,7 @@ run_status() {
   echo "Relay session: $(session_exists "$RELAY_SESSION" && echo running || echo stopped)"
   echo "Agent session: $(session_exists "$AGENT_SESSION" && echo running || echo stopped)"
   echo "Bind code:     $(read_bind_code)"
+  echo "Code expires:  $(read_bind_code_expires_at)"
   echo "Config:        $CONFIG_FILE"
   echo "Logs:          $LOG_DIR"
 }

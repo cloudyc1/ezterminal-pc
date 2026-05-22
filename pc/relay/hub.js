@@ -1,6 +1,9 @@
 const { createProtocolEvent } = require("../shared/protocol");
 const { LocalNotificationService } = require("./notification-service");
 
+const DEFAULT_BIND_CODE_TTL_MS = 10 * 60 * 1000;
+const EXPIRED_BIND_CODE_REASON = "绑定码已过期，请在电脑端运行 ./link restart 获取新绑定码";
+
 class RelayHub {
   constructor(options) {
     const config = options || {};
@@ -11,6 +14,8 @@ class RelayHub {
     this.sessionDeviceMap = new Map();
     this.deviceOwners = new Map();
     this.notificationService = config.notificationService || new LocalNotificationService();
+    this.bindCodeTtlMs = normalizePositiveNumber(config.bindCodeTtlMs, DEFAULT_BIND_CODE_TTL_MS);
+    this.now = typeof config.now === "function" ? config.now : () => Date.now();
   }
 
   attachAgent(peer) {
@@ -39,10 +44,16 @@ class RelayHub {
 
     if (event.type === "agent.register") {
       const device = normalizeDevice(event.payload);
+      this.removeBindCodesForAgent(peer);
+      this.removeBindCodesForDevice(device.device_id);
       peer.device = device;
       this.agentsByDeviceId.set(device.device_id, peer);
       if (event.payload && event.payload.bind_code) {
-        this.agentsByBindCode.set(String(event.payload.bind_code), peer);
+        this.agentsByBindCode.set(String(event.payload.bind_code), {
+          agent: peer,
+          deviceId: device.device_id,
+          expiresAtMs: getBindCodeExpiresAtMs(event.payload, this.now(), this.bindCodeTtlMs),
+        });
       }
       peer.send(createProtocolEvent("agent.registered", device));
       this.broadcastDeviceStatus(device.device_id, "online");
@@ -124,9 +135,31 @@ class RelayHub {
   }
 
   bindClientToDevice(peer, code, clientId) {
-    const agent = this.agentsByBindCode.get(String(code || ""));
+    const codeText = String(code || "");
+    const registration = this.agentsByBindCode.get(codeText);
 
+    if (!registration) {
+      peer.send(
+        createProtocolEvent("device.bind.failed", {
+          reason: "绑定码无效或 Agent 未在线",
+        })
+      );
+      return;
+    }
+
+    if (registration.expiresAtMs <= this.now()) {
+      this.agentsByBindCode.delete(codeText);
+      peer.send(
+        createProtocolEvent("device.bind.failed", {
+          reason: EXPIRED_BIND_CODE_REASON,
+        })
+      );
+      return;
+    }
+
+    const agent = registration.agent;
     if (!agent || !agent.device) {
+      this.agentsByBindCode.delete(codeText);
       peer.send(
         createProtocolEvent("device.bind.failed", {
           reason: "绑定码无效或 Agent 未在线",
@@ -295,16 +328,28 @@ class RelayHub {
 
     const deviceId = peer.device.device_id;
     this.agentsByDeviceId.delete(deviceId);
-    this.agentsByBindCode.forEach((agent, code) => {
-      if (agent === peer) {
-        this.agentsByBindCode.delete(code);
-      }
-    });
+    this.removeBindCodesForAgent(peer);
     this.clients.forEach((client) => {
       if (client.boundDevices.has(deviceId)) {
         client.send(
           createProtocolEvent("device.bound", Object.assign({}, peer.device, { status: "offline" }))
         );
+      }
+    });
+  }
+
+  removeBindCodesForAgent(peer) {
+    this.agentsByBindCode.forEach((registration, code) => {
+      if (registration.agent === peer) {
+        this.agentsByBindCode.delete(code);
+      }
+    });
+  }
+
+  removeBindCodesForDevice(deviceId) {
+    this.agentsByBindCode.forEach((registration, code) => {
+      if (registration.deviceId === deviceId) {
+        this.agentsByBindCode.delete(code);
       }
     });
   }
@@ -333,6 +378,26 @@ function normalizeDevice(payload) {
   };
 }
 
+function normalizePositiveNumber(value, fallback) {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+
+  return fallback;
+}
+
+function getBindCodeExpiresAtMs(payload, nowMs, ttlMs) {
+  const source = payload || {};
+  const explicitExpiresAt = Date.parse(source.bind_code_expires_at || "");
+  if (!Number.isNaN(explicitExpiresAt)) {
+    return explicitExpiresAt;
+  }
+
+  return nowMs + ttlMs;
+}
+
 module.exports = {
   RelayHub,
+  EXPIRED_BIND_CODE_REASON,
 };
