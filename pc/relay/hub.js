@@ -92,6 +92,7 @@ class RelayHub {
           client_id: peer.clientId,
         })
       );
+      this.restoreBoundDevicesForClient(peer);
       return;
     }
 
@@ -351,6 +352,26 @@ class RelayHub {
       if (registration.deviceId === deviceId) {
         this.agentsByBindCode.delete(code);
       }
+    });
+  }
+
+  restoreBoundDevicesForClient(peer) {
+    if (!peer || !peer.clientId) {
+      return;
+    }
+
+    this.deviceOwners.forEach((ownerClientId, deviceId) => {
+      if (ownerClientId !== peer.clientId) {
+        return;
+      }
+
+      const agent = this.agentsByDeviceId.get(deviceId);
+      if (!agent || !agent.device) {
+        return;
+      }
+
+      peer.boundDevices.add(deviceId);
+      peer.send(createProtocolEvent("device.bound", Object.assign({}, agent.device, { status: "online" })));
     });
   }
 }
