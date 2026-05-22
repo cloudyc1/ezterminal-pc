@@ -1,0 +1,22 @@
+{
+  "name": "ezterminal-pc",
+  "version": "0.1.0",
+  "description": "Open PC-side client for EzTerminal.",
+  "main": "pc/relay/server.js",
+  "bin": {
+    "ezterminal": "./link"
+  },
+  "scripts": {
+    "start": "./link start",
+    "link:start": "./link start",
+    "link:restart": "./link restart",
+    "check": "bash -n install.sh && bash -n link && bash -n pc/install.sh && bash -n pc/link && node --check pc/shared/protocol.js && node --check pc/relay/create-server.js && node --check pc/relay/server.js && node --check pc/relay/hub.js && node --check pc/relay/ws-protocol.js && node --check pc/relay/notification-service.js && node --check pc/agent/index.js && node --check pc/agent/shell-session.js && node --check pc/agent/tmux-manager.js && node --check pc/agent/tmux-attach-session.js && node --check pc/agent/desktop-terminal.js && node --check pc/agent/terminal-alerts.js && node --check pc/agent/device.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@cloudbase/node-sdk": "^3.18.1",
+    "node-pty": "^1.1.0"
+  }
+}

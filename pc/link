@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$PC_DIR/.." && pwd)"
+EZTERMINAL_HOME="${EZTERMINAL_HOME:-$HOME/.ezterminal}"
+CONFIG_FILE="$EZTERMINAL_HOME/config.env"
+LOG_DIR="$EZTERMINAL_HOME/logs"
+BIND_CODE_FILE="$EZTERMINAL_HOME/bind-code"
+RELAY_PORT="${RELAY_PORT:-8787}"
+RELAY_SESSION="${RELAY_SESSION:-ezterminal_relay}"
+AGENT_SESSION="${AGENT_SESSION:-ezterminal_agent}"
+RELAY_LOG="$LOG_DIR/relay.log"
+AGENT_LOG="$LOG_DIR/agent.log"
+COMMAND="${1:-start}"
+RESTART=0
+
+if [[ "$COMMAND" == "restart" || "$COMMAND" == "--restart" ]]; then
+  RESTART=1
+fi
+
+load_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+  fi
+
+  RELAY_PORT="${RELAY_PORT:-8787}"
+  RELAY_SESSION="${RELAY_SESSION:-ezterminal_relay}"
+  AGENT_SESSION="${AGENT_SESSION:-ezterminal_agent}"
+}
+
+ensure_config() {
+  mkdir -p "$EZTERMINAL_HOME" "$LOG_DIR"
+
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    cat >"$CONFIG_FILE" <<'CONFIG'
+# EzTerminal PC client config.
+# This file is local to your computer and should not be committed.
+RELAY_PORT=8787
+RELAY_SESSION=ezterminal_relay
+AGENT_SESSION=ezterminal_agent
+CONFIG
+  fi
+}
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Missing command: $1"
+    return 1
+  fi
+}
+
+has_command() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+detect_lan_ip() {
+  local ip
+
+  for iface in en0 en1; do
+    ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+    if [[ -n "$ip" ]]; then
+      echo "$ip"
+      return
+    fi
+  done
+
+  ifconfig 2>/dev/null | awk '/inet / && $2 !~ /^127\./ { print $2; exit }'
+}
+
+random_bind_code() {
+  awk 'BEGIN { srand(); printf "%06d", int(rand() * 1000000) }'
+}
+
+shell_quote() {
+  printf "%q" "$1"
+}
+
+is_interactive() {
+  [[ -t 0 && -t 1 ]]
+}
+
+ask_yes_no() {
+  local prompt="$1"
+  local answer
+
+  if ! is_interactive; then
+    return 1
+  fi
+
+  printf "%s [Y/n] " "$prompt"
+  read -r answer
+  case "$answer" in
+    ""|y|Y|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_node() {
+  if has_command node; then
+    return
+  fi
+
+  echo "Node.js is required. Install Node.js 22+ first: https://nodejs.org/"
+  exit 1
+}
+
+ensure_npm() {
+  if has_command npm; then
+    return
+  fi
+
+  echo "npm is required. Install Node.js 22+ first: https://nodejs.org/"
+  exit 1
+}
+
+ensure_tmux() {
+  if has_command tmux; then
+    return
+  fi
+
+  if has_command brew && ask_yes_no "tmux is not installed. Install it with Homebrew now?"; then
+    brew install tmux
+    return
+  fi
+
+  echo "tmux is required. Install it, then run ./link start again."
+  echo "macOS with Homebrew: brew install tmux"
+  exit 1
+}
+
+dependencies_ready() {
+  node -e "require('@cloudbase/node-sdk'); require('node-pty')" >/dev/null 2>&1
+}
+
+ensure_dependencies() {
+  ensure_npm
+
+  if dependencies_ready; then
+    return
+  fi
+
+  echo "Installing npm dependencies..."
+  npm install
+}
+
+session_exists() {
+  tmux has-session -t "$1" >/dev/null 2>&1
+}
+
+stop_session() {
+  if session_exists "$1"; then
+    tmux kill-session -t "$1"
+  fi
+}
+
+start_relay() {
+  if session_exists "$RELAY_SESSION"; then
+    return
+  fi
+
+  local notify_webhook
+  local notify_secret
+  local notify_function
+  local tcb_env_id
+  local tencent_secret_id
+  local tencent_secret_key
+  notify_webhook="$(shell_quote "${WECHAT_NOTIFY_WEBHOOK:-}")"
+  notify_secret="$(shell_quote "${WECHAT_NOTIFY_SECRET:-}")"
+  notify_function="$(shell_quote "${WECHAT_NOTIFY_FUNCTION:-terminalNotify}")"
+  tcb_env_id="$(shell_quote "${TCB_ENV_ID:-${CLOUDBASE_ENV_ID:-}}")"
+  tencent_secret_id="$(shell_quote "${TENCENTCLOUD_SECRET_ID:-${TENCENTCLOUD_SECRETID:-}}")"
+  tencent_secret_key="$(shell_quote "${TENCENTCLOUD_SECRET_KEY:-${TENCENTCLOUD_SECRETKEY:-}}")"
+  : >"$RELAY_LOG"
+  tmux new-session -d -s "$RELAY_SESSION" -c "$ROOT_DIR" \
+    "RELAY_HOST=0.0.0.0 RELAY_PORT=$RELAY_PORT WECHAT_NOTIFY_WEBHOOK=$notify_webhook WECHAT_NOTIFY_SECRET=$notify_secret WECHAT_NOTIFY_FUNCTION=$notify_function TCB_ENV_ID=$tcb_env_id TENCENTCLOUD_SECRET_ID=$tencent_secret_id TENCENTCLOUD_SECRET_KEY=$tencent_secret_key node pc/relay/server.js 2>&1 | tee '$RELAY_LOG'"
+}
+
+start_agent() {
+  if session_exists "$AGENT_SESSION"; then
+    return
+  fi
+
+  local bind_code
+  bind_code="${BIND_CODE:-$(random_bind_code)}"
+  printf "%s" "$bind_code" >"$BIND_CODE_FILE"
+  : >"$AGENT_LOG"
+  tmux new-session -d -s "$AGENT_SESSION" -c "$ROOT_DIR" \
+    "EZTERMINAL_HOME=$(shell_quote "$EZTERMINAL_HOME") RELAY_URL=ws://127.0.0.1:$RELAY_PORT/agent BIND_CODE=$bind_code node pc/agent/index.js 2>&1 | tee '$AGENT_LOG'"
+}
+
+read_bind_code() {
+  local code
+
+  if [[ -f "$BIND_CODE_FILE" ]]; then
+    code="$(cat "$BIND_CODE_FILE")"
+    if [[ "$code" =~ ^[0-9]{6}$ ]]; then
+      echo "$code"
+      return
+    fi
+  fi
+
+  if session_exists "$AGENT_SESSION"; then
+    code="$(tmux capture-pane -t "$AGENT_SESSION" -p 2>/dev/null | awk '/Bind code:/ { code=$3 } END { print code }')"
+    if [[ "$code" =~ ^[0-9]{6}$ ]]; then
+      echo "$code"
+      return
+    fi
+  fi
+
+  if [[ -f "$AGENT_LOG" ]]; then
+    code="$(awk '/Bind code:/ { code=$3 } END { print code }' "$AGENT_LOG")"
+    if [[ "$code" =~ ^[0-9]{6}$ ]]; then
+      echo "$code"
+      return
+    fi
+  fi
+
+  echo "unknown"
+}
+
+print_summary() {
+  local lan_ip
+  local bind_code
+
+  lan_ip="$(detect_lan_ip)"
+  bind_code="$(read_bind_code)"
+
+  echo ""
+  echo "EzTerminal PC service is running"
+  echo ""
+  echo "Relay session: $RELAY_SESSION"
+  echo "Agent session: $AGENT_SESSION"
+  echo "Config:        $CONFIG_FILE"
+  echo "Logs:          $LOG_DIR"
+  echo ""
+  echo "Simulator Relay: ws://127.0.0.1:$RELAY_PORT/client"
+  if [[ -n "$lan_ip" ]]; then
+    echo "Phone Relay:     ws://$lan_ip:$RELAY_PORT/client"
+  else
+    echo "Phone Relay:     unable to detect LAN IP"
+  fi
+  echo "Bind code:       $bind_code"
+  echo ""
+  echo "Next: open the Mini Program, connect to the Phone Relay, then enter the bind code."
+}
+
+run_relay_foreground() {
+  ensure_config
+  load_config
+  ensure_node
+  ensure_dependencies
+  RELAY_HOST="${RELAY_HOST:-0.0.0.0}" RELAY_PORT="$RELAY_PORT" node "$ROOT_DIR/pc/relay/server.js"
+}
+
+run_agent_foreground() {
+  ensure_config
+  load_config
+  ensure_node
+  ensure_dependencies
+  RELAY_URL="${RELAY_URL:-ws://127.0.0.1:$RELAY_PORT/agent}" BIND_CODE="${BIND_CODE:-$(random_bind_code)}" EZTERMINAL_HOME="$EZTERMINAL_HOME" node "$ROOT_DIR/pc/agent/index.js"
+}
+
+run_start() {
+  ensure_config
+  load_config
+  ensure_node
+  ensure_tmux
+  ensure_dependencies
+
+  if [[ "$RESTART" == "1" ]]; then
+    stop_session "$AGENT_SESSION"
+    stop_session "$RELAY_SESSION"
+  fi
+
+  start_relay
+  sleep 1
+  start_agent
+  sleep 1
+  print_summary
+}
+
+run_stop() {
+  ensure_config
+  load_config
+  ensure_tmux
+  stop_session "$AGENT_SESSION"
+  stop_session "$RELAY_SESSION"
+  echo "EzTerminal PC service stopped."
+}
+
+run_status() {
+  ensure_config
+  load_config
+  ensure_tmux
+  echo "Relay session: $(session_exists "$RELAY_SESSION" && echo running || echo stopped)"
+  echo "Agent session: $(session_exists "$AGENT_SESSION" && echo running || echo stopped)"
+  echo "Bind code:     $(read_bind_code)"
+  echo "Config:        $CONFIG_FILE"
+  echo "Logs:          $LOG_DIR"
+}
+
+run_doctor() {
+  ensure_config
+  load_config
+  echo "EzTerminal doctor"
+  echo ""
+  printf "node: "
+  if has_command node; then node --version; else echo "missing"; fi
+  printf "npm:  "
+  if has_command npm; then npm --version; else echo "missing"; fi
+  printf "tmux: "
+  if has_command tmux; then tmux -V; else echo "missing"; fi
+  printf "deps: "
+  if dependencies_ready; then echo "installed"; else echo "missing; ./link start will run npm install"; fi
+  echo "config: $CONFIG_FILE"
+}
+
+print_help() {
+  cat <<'HELP'
+Usage:
+  ./link start      Check setup, install missing npm deps, then start PC service
+  ./link restart    Restart PC service and refresh the bind code
+  ./link stop       Stop PC service
+  ./link status     Show service status and bind code
+  ./link doctor     Check local requirements
+  ./link relay      Run only the Relay in the foreground
+  ./link agent      Run only the Agent in the foreground
+HELP
+}
+
+main() {
+  case "$COMMAND" in
+    start|restart|--restart)
+      run_start
+      ;;
+    stop)
+      run_stop
+      ;;
+    status)
+      run_status
+      ;;
+    doctor)
+      run_doctor
+      ;;
+    relay)
+      run_relay_foreground
+      ;;
+    agent)
+      run_agent_foreground
+      ;;
+    help|-h|--help)
+      print_help
+      ;;
+    *)
+      echo "Unknown command: $COMMAND"
+      print_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
