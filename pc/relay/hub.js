@@ -125,6 +125,24 @@ class RelayHub {
       return;
     }
 
+    if (event.type === "session.close") {
+      if (!this.canUseDevice(peer, event.device_id)) {
+        peer.send(
+          createProtocolEvent("device.access.denied", {
+            device_id: event.device_id,
+            reason: "当前小程序未绑定这台电脑",
+          })
+        );
+        return;
+      }
+
+      this.forwardToAgent(event.device_id, event, peer);
+      if (event.session_id) {
+        this.sessionDeviceMap.delete(event.session_id);
+      }
+      return;
+    }
+
     if (event.type === "terminal.input" || event.type === "terminal.signal") {
       this.forwardSessionEventToAgent(event, peer);
       return;

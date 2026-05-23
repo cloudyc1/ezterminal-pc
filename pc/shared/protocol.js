@@ -35,6 +35,13 @@ function createSessionCreateEvent(deviceId, payload) {
   });
 }
 
+function createSessionCloseEvent(deviceId, sessionId, payload) {
+  return createProtocolEvent("session.close", payload || {}, {
+    device_id: deviceId,
+    session_id: sessionId,
+  });
+}
+
 function createTerminalInputEvent(sessionId, data) {
   return createProtocolEvent(
     "terminal.input",
@@ -88,6 +95,7 @@ module.exports = {
   createId,
   createProtocolEvent,
   createSessionCreateEvent,
+  createSessionCloseEvent,
   createTerminalInputEvent,
   createTerminalSignalEvent,
   createClientHelloEvent,

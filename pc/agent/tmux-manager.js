@@ -51,13 +51,16 @@ function buildTmuxSessionId(name) {
 
 class TmuxManager {
   constructor(options) {
-    this.tmuxPath = (options && options.tmuxPath) || "tmux";
+    const config = options || {};
+
+    this.tmuxPath = config.tmuxPath || "tmux";
+    this.execFileSync = config.execFileSync || execFileSync;
   }
 
   listSessions() {
     try {
       return parseTmuxSessions(
-        execFileSync(this.tmuxPath, ["list-sessions", "-F", LIST_FORMAT], {
+        this.execFileSync(this.tmuxPath, ["list-sessions", "-F", LIST_FORMAT], {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
         })
@@ -69,7 +72,7 @@ class TmuxManager {
 
   hasSession(name) {
     try {
-      execFileSync(this.tmuxPath, ["has-session", "-t", name], {
+      this.execFileSync(this.tmuxPath, ["has-session", "-t", name], {
         stdio: "ignore",
       });
       return true;
@@ -95,6 +98,17 @@ class TmuxManager {
     }
   }
 
+  killSession(name) {
+    try {
+      this.execFileSync(this.tmuxPath, ["kill-session", "-t", sanitizeSessionName(name)], {
+        stdio: "ignore",
+      });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
   ensureSession(name, cwd) {
     const sessionName = sanitizeSessionName(name);
 
@@ -104,7 +118,7 @@ class TmuxManager {
       if (cwd && fs.existsSync(cwd)) {
         args.push("-c", cwd);
       }
-      execFileSync(this.tmuxPath, args, {
+      this.execFileSync(this.tmuxPath, args, {
         stdio: "ignore",
       });
     }

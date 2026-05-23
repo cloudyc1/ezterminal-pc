@@ -75,6 +75,11 @@ function handleRelayEvent(event) {
     return;
   }
 
+  if (event.type === "session.close") {
+    closeTmuxSession(event);
+    return;
+  }
+
   if (event.type === "terminal.input") {
     const session = sessions.get(event.session_id);
     if (session) {
@@ -271,6 +276,37 @@ function attachTmuxSession(event) {
       }
     )
   );
+}
+
+function closeTmuxSession(event) {
+  const payload = event.payload || {};
+  const tmuxName = sanitizeSessionName(payload.tmux_name || payload.title || "mobile");
+  const sessionId = event.session_id || payload.session_id || `tmux_${tmuxName}`;
+  const attachedSession = sessions.get(sessionId);
+
+  if (attachedSession) {
+    attachedSession.close();
+    sessions.delete(sessionId);
+    alertSignatures.delete(sessionId);
+  }
+
+  const killed = tmux.killSession(tmuxName);
+  send(
+    createProtocolEvent(
+      "session.status",
+      {
+        status: "closed",
+        shell: "tmux",
+        tmux_name: tmuxName,
+        killed,
+      },
+      {
+        device_id: device.device_id,
+        session_id: sessionId,
+      }
+    )
+  );
+  sendSessionList();
 }
 
 function maybeSendTerminalAlert(sessionId, output, tmuxName) {
