@@ -207,7 +207,15 @@ function attachTmuxSession(event) {
 
   maybeOpenDesktopTerminal(tmuxName, payload.cwd, payload.open_desktop);
 
-  if (!sessionId || sessions.has(sessionId)) {
+  if (!sessionId) {
+    return;
+  }
+
+  const existingSession = sessions.get(sessionId);
+  if (existingSession) {
+    if (typeof existingSession.refresh === "function") {
+      existingSession.refresh();
+    }
     return;
   }
 

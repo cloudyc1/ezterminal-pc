@@ -8,6 +8,7 @@ class TmuxAttachSession extends EventEmitter {
     this.tmuxName = options.tmuxName;
     this.tmuxPath = options.tmuxPath || "tmux";
     this.intervalMs = options.intervalMs || 300;
+    this.execFileSync = options.execFileSync || execFileSync;
     this.timer = null;
     this.pendingCaptures = [];
     this.lastOutput = "";
@@ -19,7 +20,7 @@ class TmuxAttachSession extends EventEmitter {
   }
 
   write(data) {
-    sendTextToTmux(this.tmuxPath, this.tmuxName, String(data || ""));
+    sendTextToTmux(this.tmuxPath, this.tmuxName, String(data || ""), this.execFileSync);
     this.capture();
     this.scheduleCapture(80);
     this.scheduleCapture(240);
@@ -27,11 +28,17 @@ class TmuxAttachSession extends EventEmitter {
 
   signal(signal) {
     if (signal === "SIGINT") {
-      execFileSync(this.tmuxPath, ["send-keys", "-t", this.tmuxName, "C-c"], {
+      this.execFileSync(this.tmuxPath, ["send-keys", "-t", this.tmuxName, "C-c"], {
         stdio: "ignore",
       });
       this.capture();
     }
+  }
+
+  refresh() {
+    this.capture({
+      force: true,
+    });
   }
 
   close() {
@@ -51,9 +58,11 @@ class TmuxAttachSession extends EventEmitter {
     this.pendingCaptures.push(timer);
   }
 
-  capture() {
+  capture(options) {
+    const config = options || {};
+
     try {
-      const output = execFileSync(
+      const output = this.execFileSync(
         this.tmuxPath,
         ["capture-pane", "-t", this.tmuxName, "-p", "-S", "-200"],
         {
@@ -62,7 +71,7 @@ class TmuxAttachSession extends EventEmitter {
         }
       );
 
-      if (output !== this.lastOutput) {
+      if (config.force || output !== this.lastOutput) {
         this.lastOutput = output;
         this.emit("replace", output);
       }
@@ -74,9 +83,11 @@ class TmuxAttachSession extends EventEmitter {
   }
 }
 
-function sendTextToTmux(tmuxPath, tmuxName, text) {
+function sendTextToTmux(tmuxPath, tmuxName, text, execCommand) {
+  const run = execCommand || execFileSync;
+
   buildSendKeyCommands(tmuxPath, tmuxName, text).forEach(([command, args]) => {
-    execFileSync(command, args, {
+    run(command, args, {
       stdio: "ignore",
     });
   });
