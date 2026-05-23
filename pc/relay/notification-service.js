@@ -1,7 +1,12 @@
 class LocalNotificationService {
-  constructor() {
+  constructor(options) {
+    const config = options || {};
+
     this.subscriptions = new Map();
     this.alerts = [];
+    this.logger = config.logger || console;
+    this.lastDelivery = null;
+    this.suppressLocalDelivery = Boolean(config.suppressLocalDelivery);
   }
 
   register(subscription) {
@@ -26,13 +31,67 @@ class LocalNotificationService {
 
     this.alerts.push(item);
     this.alerts = this.alerts.slice(-100);
+    if (!this.suppressLocalDelivery) {
+      this.recordDelivery(item, {
+        success: false,
+        error: "not_configured",
+        sent_count: 0,
+      });
+    }
     return item;
+  }
+
+  getStatus() {
+    return {
+      enabled: false,
+      mode: "local",
+      label: "not configured",
+      reason: "missing CloudBase credentials",
+    };
+  }
+
+  recordDelivery(alert, result) {
+    const payload = buildWechatNotificationPayload(alert, "");
+    const delivery = {
+      success: Boolean(result && result.success),
+      error: result && result.error ? String(result.error) : "",
+      sent_count: Number(result && result.sent_count ? result.sent_count : 0),
+      notification_type: payload.notification_type,
+      device_id: payload.device_id,
+      session_id: payload.session_id,
+      mode: this.getStatus().mode,
+      created_at: new Date().toISOString(),
+    };
+
+    this.lastDelivery = delivery;
+    this.logDelivery(delivery);
+    return delivery;
+  }
+
+  logDelivery(delivery) {
+    if (delivery.success && delivery.sent_count > 0) {
+      this.logger.log(
+        `[notify] ${delivery.mode} sent ${delivery.notification_type} to ${delivery.sent_count} target(s) for ${delivery.device_id}`
+      );
+      return;
+    }
+
+    if (delivery.success) {
+      this.logger.warn(
+        `[notify] ${delivery.mode} sent_count=0 for ${delivery.notification_type} on ${delivery.device_id}; open the Mini Program and tap 开启通知 again`
+      );
+      return;
+    }
+
+    this.logger.warn(
+      `[notify] ${delivery.mode} disabled or failed for ${delivery.notification_type} on ${delivery.device_id}: ${delivery.error || "unknown_error"}`
+    );
   }
 }
 
 class WechatNotificationService extends LocalNotificationService {
   constructor(options) {
-    super();
+    super(Object.assign({}, options || {}, { suppressLocalDelivery: true }));
     const config = options || {};
 
     this.webhookUrl = config.webhookUrl || "";
@@ -48,18 +107,32 @@ class WechatNotificationService extends LocalNotificationService {
       return item;
     }
 
-    const task = this.postJson(
-      this.webhookUrl,
-      buildWechatNotificationPayload(item, this.secret)
-    ).catch((error) => {
-      console.error(`[notify] WeChat webhook failed: ${error.message}`);
-    });
+    const task = this.postJson(this.webhookUrl, buildWechatNotificationPayload(item, this.secret))
+      .then((result) => {
+        this.recordDelivery(item, Object.assign({ success: true, sent_count: 1 }, result || {}));
+      })
+      .catch((error) => {
+        this.recordDelivery(item, {
+          success: false,
+          error: error.message,
+          sent_count: 0,
+        });
+      });
     this.pending.push(task);
     task.finally(() => {
       this.pending = this.pending.filter((entry) => entry !== task);
     });
 
     return item;
+  }
+
+  getStatus() {
+    return {
+      enabled: Boolean(this.webhookUrl),
+      mode: "webhook",
+      label: this.webhookUrl ? "webhook" : "not configured",
+      reason: this.webhookUrl ? "" : "missing webhook url",
+    };
   }
 
   async flush() {
@@ -69,7 +142,7 @@ class WechatNotificationService extends LocalNotificationService {
 
 class CloudBaseNotificationService extends LocalNotificationService {
   constructor(options) {
-    super();
+    super(Object.assign({}, options || {}, { suppressLocalDelivery: true }));
     const config = options || {};
 
     this.envId = config.envId || "";
@@ -89,15 +162,36 @@ class CloudBaseNotificationService extends LocalNotificationService {
       return item;
     }
 
-    const task = this.callTerminalNotify(item).catch((error) => {
-      console.error(`[notify] CloudBase function failed: ${error.message}`);
-    });
+    const task = this.callTerminalNotify(item)
+      .then((response) => {
+        this.recordDelivery(item, normalizeCloudFunctionResult(response));
+      })
+      .catch((error) => {
+        this.recordDelivery(item, {
+          success: false,
+          error: error.message,
+          sent_count: 0,
+        });
+      });
     this.pending.push(task);
     task.finally(() => {
       this.pending = this.pending.filter((entry) => entry !== task);
     });
 
     return item;
+  }
+
+  getStatus() {
+    const enabled = Boolean(this.envId && this.secretId && this.secretKey);
+
+    return {
+      enabled,
+      mode: "cloudbase",
+      label: enabled ? "CloudBase SDK" : "not configured",
+      reason: enabled ? "" : "missing CloudBase credentials",
+      function_name: this.functionName,
+      env_id: this.envId,
+    };
   }
 
   async callTerminalNotify(alert) {
@@ -150,6 +244,34 @@ function createNotificationServiceFromEnv(env) {
     webhookUrl,
     secret: source.WECHAT_NOTIFY_SECRET || "",
   });
+}
+
+function normalizeCloudFunctionResult(response) {
+  const result = response && response.result ? response.result : response || {};
+
+  return {
+    success: Boolean(result.success),
+    error: result.error || "",
+    sent_count: Number(result.sent_count || 0),
+  };
+}
+
+function formatNotificationStatus(status) {
+  const value = status || {};
+
+  if (!value.enabled) {
+    return "disabled (not configured)";
+  }
+
+  if (value.mode === "cloudbase") {
+    return "enabled (CloudBase SDK)";
+  }
+
+  if (value.mode === "webhook") {
+    return "enabled (webhook)";
+  }
+
+  return `enabled (${value.mode || "unknown"})`;
 }
 
 function createCloudBaseApp(config) {
@@ -231,4 +353,5 @@ module.exports = {
   WechatNotificationService,
   buildWechatNotificationPayload,
   createNotificationServiceFromEnv,
+  formatNotificationStatus,
 };

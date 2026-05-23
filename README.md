@@ -24,6 +24,7 @@ cd ezterminal-pc
 
 ```text
 Phone Relay: ws://你的局域网IP:8787/client
+WeChat notify: disabled (not configured)
 Bind code:   123456
 Code expires: 2026-05-23T12:00:00.000Z
 ```
@@ -83,6 +84,21 @@ RELAY_SESSION=ezterminal_relay
 AGENT_SESSION=ezterminal_agent
 ```
 
+如果你要在小程序挂起后继续收到微信订阅消息，把 CloudBase SDK 调用配置也写进这个本机文件：
+
+```bash
+TCB_ENV_ID=cloud1-你的环境
+TENCENTCLOUD_SECRET_ID=你的SecretId
+TENCENTCLOUD_SECRET_KEY=你的SecretKey
+WECHAT_NOTIFY_FUNCTION=terminalNotify
+```
+
+这条链路不需要开 CloudBase HTTP 访问服务。`./link status` 或 `./link doctor` 显示下面这行才表示 PC Relay 会调用云函数发通知：
+
+```text
+WeChat notify: enabled (CloudBase SDK)
+```
+
 如果端口被占用，可以修改 `RELAY_PORT` 后重新运行：
 
 ```bash
@@ -113,6 +129,15 @@ Simulator Relay: ws://127.0.0.1:8787/client
 ```bash
 ./link status
 ```
+
+查看通知链路是否已配置：
+
+```bash
+./link doctor
+tmux attach -t ezterminal_relay
+```
+
+Relay 日志里会显示每次云函数调用结果。`sent_count=0` 通常表示小程序还没点“开启通知”，或者一次性订阅额度已经被上一条通知消耗，需要重新授权。
 
 重启并刷新绑定码：
 

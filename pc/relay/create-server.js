@@ -14,7 +14,12 @@ function createRelayServer(options) {
   const server = http.createServer((req, res) => {
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
+      res.end(
+        JSON.stringify({
+          ok: true,
+          notification: hub.notificationService.getStatus(),
+        })
+      );
       return;
     }
 

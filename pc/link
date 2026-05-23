@@ -47,6 +47,27 @@ RELAY_PORT=8787
 BIND_CODE_TTL_SECONDS=600
 RELAY_SESSION=ezterminal_relay
 AGENT_SESSION=ezterminal_agent
+
+# Optional WeChat subscribe-message notification through CloudBase SDK.
+# Fill these when you want background notifications without CloudBase HTTP access.
+# TCB_ENV_ID=cloud1-xxxxxxxx
+# TENCENTCLOUD_SECRET_ID=AKIDxxxxxxxx
+# TENCENTCLOUD_SECRET_KEY=xxxxxxxx
+# WECHAT_NOTIFY_FUNCTION=terminalNotify
+# WECHAT_NOTIFY_SECRET=
+CONFIG
+  fi
+
+  if ! grep -q "TCB_ENV_ID" "$CONFIG_FILE"; then
+    cat >>"$CONFIG_FILE" <<'CONFIG'
+
+# Optional WeChat subscribe-message notification through CloudBase SDK.
+# Fill these when you want background notifications without CloudBase HTTP access.
+# TCB_ENV_ID=cloud1-xxxxxxxx
+# TENCENTCLOUD_SECRET_ID=AKIDxxxxxxxx
+# TENCENTCLOUD_SECRET_KEY=xxxxxxxx
+# WECHAT_NOTIFY_FUNCTION=terminalNotify
+# WECHAT_NOTIFY_SECRET=
 CONFIG
   fi
 }
@@ -89,6 +110,28 @@ create_bind_code_expires_at() {
 
 shell_quote() {
   printf "%q" "$1"
+}
+
+notification_status_label() {
+  local env_id
+  local secret_id
+  local secret_key
+
+  env_id="${TCB_ENV_ID:-${CLOUDBASE_ENV_ID:-}}"
+  secret_id="${TENCENTCLOUD_SECRET_ID:-${TENCENTCLOUD_SECRETID:-${TCB_SECRET_ID:-}}}"
+  secret_key="${TENCENTCLOUD_SECRET_KEY:-${TENCENTCLOUD_SECRETKEY:-${TCB_SECRET_KEY:-}}}"
+
+  if [[ -n "$env_id" && -n "$secret_id" && -n "$secret_key" ]]; then
+    echo "enabled (CloudBase SDK)"
+    return
+  fi
+
+  if [[ -n "${WECHAT_NOTIFY_WEBHOOK:-}" ]]; then
+    echo "enabled (webhook)"
+    return
+  fi
+
+  echo "disabled (not configured)"
 }
 
 is_interactive() {
@@ -287,6 +330,7 @@ print_summary() {
   echo "Agent session: $AGENT_SESSION"
   echo "Config:        $CONFIG_FILE"
   echo "Logs:          $LOG_DIR"
+  echo "WeChat notify: $(notification_status_label)"
   echo ""
   echo "Simulator Relay: ws://127.0.0.1:$RELAY_PORT/client"
   if [[ -n "$lan_ip" ]]; then
@@ -306,7 +350,15 @@ run_relay_foreground() {
   load_config
   ensure_node
   ensure_dependencies
-  RELAY_HOST="${RELAY_HOST:-0.0.0.0}" RELAY_PORT="$RELAY_PORT" node "$ROOT_DIR/pc/relay/server.js"
+  RELAY_HOST="${RELAY_HOST:-0.0.0.0}" \
+    RELAY_PORT="$RELAY_PORT" \
+    WECHAT_NOTIFY_WEBHOOK="${WECHAT_NOTIFY_WEBHOOK:-}" \
+    WECHAT_NOTIFY_SECRET="${WECHAT_NOTIFY_SECRET:-}" \
+    WECHAT_NOTIFY_FUNCTION="${WECHAT_NOTIFY_FUNCTION:-terminalNotify}" \
+    TCB_ENV_ID="${TCB_ENV_ID:-${CLOUDBASE_ENV_ID:-}}" \
+    TENCENTCLOUD_SECRET_ID="${TENCENTCLOUD_SECRET_ID:-${TENCENTCLOUD_SECRETID:-${TCB_SECRET_ID:-}}}" \
+    TENCENTCLOUD_SECRET_KEY="${TENCENTCLOUD_SECRET_KEY:-${TENCENTCLOUD_SECRETKEY:-${TCB_SECRET_KEY:-}}}" \
+    node "$ROOT_DIR/pc/relay/server.js"
 }
 
 run_agent_foreground() {
@@ -353,6 +405,7 @@ run_status() {
   echo "Agent session: $(session_exists "$AGENT_SESSION" && echo running || echo stopped)"
   echo "Bind code:     $(read_bind_code)"
   echo "Code expires:  $(read_bind_code_expires_at)"
+  echo "WeChat notify: $(notification_status_label)"
   echo "Config:        $CONFIG_FILE"
   echo "Logs:          $LOG_DIR"
 }
@@ -370,6 +423,7 @@ run_doctor() {
   if has_command tmux; then tmux -V; else echo "missing"; fi
   printf "deps: "
   if dependencies_ready; then echo "installed"; else echo "missing; ./link start will run npm install"; fi
+  echo "notify: $(notification_status_label)"
   echo "config: $CONFIG_FILE"
 }
 
