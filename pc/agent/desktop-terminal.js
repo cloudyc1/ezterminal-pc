@@ -50,6 +50,8 @@ function writeAttachScript(options) {
   const script = [
     "#!/bin/zsh",
     `cd ${shellQuote(cwd)} 2>/dev/null || cd ~`,
+    `${shellQuote(tmuxPath)} set-option -g mouse on >/dev/null 2>&1 || true`,
+    `${shellQuote(tmuxPath)} set-option -g history-limit 50000 >/dev/null 2>&1 || true`,
     `exec ${shellQuote(tmuxPath)} attach-session -t ${shellQuote(tmuxName)}`,
     "",
   ].join("\n");
