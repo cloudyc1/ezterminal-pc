@@ -52,6 +52,8 @@ function writeAttachScript(options) {
     `cd ${shellQuote(cwd)} 2>/dev/null || cd ~`,
     `${shellQuote(tmuxPath)} set-option -g mouse on >/dev/null 2>&1 || true`,
     `${shellQuote(tmuxPath)} set-option -g history-limit 50000 >/dev/null 2>&1 || true`,
+    `${shellQuote(tmuxPath)} bind-key -T copy-mode MouseDragEnd1Pane send -X copy-pipe-no-clear ${shellQuote("pbcopy")} >/dev/null 2>&1 || true`,
+    `${shellQuote(tmuxPath)} bind-key -T copy-mode-vi MouseDragEnd1Pane send -X copy-pipe-no-clear ${shellQuote("pbcopy")} >/dev/null 2>&1 || true`,
     `exec ${shellQuote(tmuxPath)} attach-session -t ${shellQuote(tmuxName)}`,
     "",
   ].join("\n");
